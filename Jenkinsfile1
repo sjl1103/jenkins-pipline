@@ -1,0 +1,36 @@
+node('testsjl') {
+    stage('从gitee上下载源代码') {
+        git url: "https://gitee.com/s-jialin/go-project.git"
+        script {
+            // 获取当前时间戳，格式为年月日时分秒，时区设置为上海
+            build_tag = new Date().format('yyyyMMddHHmmss', TimeZone.getTimeZone('Asia/Shanghai'))
+        }
+    }
+    stage('基于dockerfile文件制作镜像') {
+        sh "cd ./go && docker build -t 192.168.8.170/go-project/game:${build_tag} ."
+    }
+    stage('把镜像上传到harbor私有仓库') {
+        withCredentials([usernamePassword(credentialsId: 'dockerharbor', passwordVariable: 'harborPassword', usernameVariable: 'harborUser')]) {
+            sh "docker login 192.168.8.170 -u ${harborUser} -p ${harborPassword}"
+            sh "docker push 192.168.8.170/go-project/game:${build_tag}"
+        }
+    }
+    stage('部署') {
+        // 用户输入，选择部署的命名空间
+        def namespace = input(
+            id: 'choose-namespace', 
+            message: '请选择部署的命名空间:(test:测试环境|pro:生产环境)', 
+            parameters: [choice(name: 'namespace', choices: ['test', 'pro'], description: '部署到哪个命名空间？')]
+        )
+        // 将用户选择的命名空间,和标签值设置为环境变量，以便后续步骤使用
+        env.NAMESPACE = namespace
+        echo "This is a deploy step to ${namespace}"
+
+        // 根据用户选择的命名空间进行部署
+            sh "cd ./go && sed -i 's/<TAG>/${build_tag}/g' game.yaml"
+            sh "cd ./go && sed -i 's/<NAMESPACE>/${env.NAMESPACE}/g' game.yaml"
+            sh "cd ./go && kubectl apply -f game.yaml --validate=false"
+            sh "sleep 3"
+            sh "kubectl get pods,svc -n ${env.NAMESPACE} -l time=sjl${build_tag}"
+    }
+}
